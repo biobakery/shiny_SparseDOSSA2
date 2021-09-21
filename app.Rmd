@@ -1,0 +1,456 @@
+---
+title: "sparseDOSSA 2 Viewer"
+author: ""
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    source_code: embed
+runtime: shiny
+---
+
+```{r global, include=FALSE}
+# before you publish, please run: options(repos = BiocManager::repositories())
+library(SparseDOSSA2)
+library(magrittr)
+library(circlize)
+library(dplyr)
+library(matrixStats)
+library(knitr)
+library(tidyr)
+library(ComplexHeatmap)
+library(ggplot2)
+```
+
+```{r}
+rv <- reactiveValues(data = NULL)
+observe({
+  req(input$n_sample)
+  
+  if (input$no_continuous){
+    metadata_matrix <- as.matrix(c(rep(0, input$n_sample/2), rep(1, input$n_sample/2)))
+  } else {
+    metadata_matrix <- NULL    
+  }
+  
+  set.seed(42)
+  sim <- SparseDOSSA2(
+    template = input$template,
+    n_sample = input$n_sample,
+    n_feature = input$n_features,
+    median_read_depth = input$median_read_depth,
+    new_features = input$new_features,
+    metadata_matrix = metadata_matrix,
+    spike_metadata = input$spike_metadata,
+    metadata_effect_size = input$metadata_effect_size,
+    perc_feature_spiked_metadata = input$perc_feature_spiked_metadata,
+    verbose = FALSE
+  )
+  rv$data <- sim
+})
+```
+
+Inputs {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+selectInput('matrix', 'Matrix to visualize', c("$simulated" = "simulated", "$rel"= "rel", "$a_spiked" = "a_spiked", "$a_null" = "a_null"))
+
+sliderInput(
+  'n_sample',
+  'Number of Samples',
+  min = 10,
+  max = 1000,
+  value = 200,
+  step = 10,
+  round = 0
+)
+
+sliderInput(
+  'n_features',
+  'Number of Features',
+  min = 10,
+  max = 1000,
+  value = 100,
+  step = 10,
+  round = 0
+)
+
+sliderInput(
+  'median_read_depth',
+  'Median read depth',
+  min = 1,
+  max = 10000,
+  value = 10000,
+  step = 50,
+  round = 0
+)
+
+checkboxInput('new_features', 'Simulate new Features', value = TRUE)
+checkboxInput('no_continuous', 'Disable continuous spike-in', value = FALSE)
+
+selectInput('template', 'Template', c("Stool", "Vaginal", "IBD"))
+
+selectInput('spike_metadata',
+            'Spike metadata',
+            c("none", "both", "abundance", "prevalence"))
+
+sliderInput(
+  'metadata_effect_size',
+  'Metadata effect size',
+  min = 0.1,
+  max = 10,
+  value = 0.1,
+  round = 0
+)
+
+sliderInput(
+  'perc_feature_spiked_metadata',
+  'Percentage of features to be associated with metadata',
+  min = .1,
+  max = .5,
+  value = .1,
+  round = .1
+)
+```
+
+
+Column 
+-----------------------------------------------------------------------
+
+### Heatmap
+    
+```{r}
+renderPlot({
+  req(rv$data)
+  if (input$matrix == "simulated") {
+    mat <- data.matrix(rv$data$simulated_data)
+  } else if (input$matrix == "rel") {
+    mat <- data.matrix(rv$data$simulated_matrices$rel)
+  } else if (input$matrix == "a_spiked") {
+    mat <- data.matrix(rv$data$simulated_matrices$a_spiked)
+  } else if (input$matrix == "a_null") {
+    mat <- data.matrix(rv$data$simulated_matrices$a_null)
+  }
+  
+  if (input$spike_metadata == "none") {
+    Heatmap(
+      name = input$matrix,
+      mat,
+      border_gp = gpar(col = "black", lty = 1),
+      cluster_rows = F,
+      row_order = order(-rowMeans(data.matrix(mat))),
+      cluster_columns = T,
+      show_row_dend = F,
+      show_column_dend = F,
+      show_row_names = F,
+      show_column_names = F,
+      column_title = paste0(ncol(mat), " Samples"),
+      row_title = paste0(nrow(mat), " Features")
+    )
+  } else {
+    is_row_spiked <-
+      ifelse(
+        rownames(mat) %in% rv$data$spike_metadata$feature_metadata_spike_df$feature_spiked,
+        "spiked",
+        "non-spiked"
+      )
+    spiked_df <- rv$data$spike_metadata$feature_metadata_spike_df
+    
+    effect_size <-
+      data.frame(feature = rownames(mat),
+                 effect_size = 0)
+    
+    effect_sizes <-
+      spiked_df[match(effect_size$feature, spiked_df$feature_spiked),]$effect_size
+    
+    metadata_datum <-
+      data.frame(feature = rownames(mat),
+                 metadata_datum = 0)
+    
+    # get metadata_datum with the right order matching to the heatmap
+    metadata_datums <-
+      spiked_df[match(metadata_datum$feature, spiked_df$feature_spiked),]$metadata_datum
+    
+    # define row / column annotations
+    col_fun_effect = colorRamp2(
+      c(
+        -input$metadata_effect_size,
+        0,
+        input$metadata_effect_size
+      ),
+      c("green", "white", "red")
+    )
+    
+    row_ha = rowAnnotation(
+      effect_size = effect_sizes,
+      metadata_datum = metadata_datums,
+      col  = list(
+        effect_size = col_fun_effect,
+        metadata_datum = c("1" = "yellow", "2" = "purple")
+      )
+    )
+    
+    # Create the column heatmap annotation
+    top_ha = HeatmapAnnotation(foo = anno_block(
+      gp = gpar(fill = 2:3),
+      labels = c("case", "control"),
+      labels_gp = gpar(col = "white", fontsize = 10)
+    ))
+    
+     if (input$no_continuous){ # metadata_matrix is manually specified
+        Heatmap(
+      name = input$matrix,
+      data.matrix(mat),
+      #   top_annotation = top_ha,
+      right_annotation = row_ha,
+      border_gp = gpar(col = "black", lty = 1),
+      cluster_rows = F,
+      row_order = order(-rowMeans(data.matrix(mat))),
+      cluster_columns = T,
+      column_split = rv$data$spike_metadata$metadata_matrix[, 1],
+      row_split = is_row_spiked,
+      show_row_dend = F,
+      show_column_dend = F,
+      show_row_names = F,
+      show_column_names = F
+    )
+     } else {
+    Heatmap(
+      name = input$matrix,
+      data.matrix(mat),
+      #   top_annotation = top_ha,
+      right_annotation = row_ha,
+      border_gp = gpar(col = "black", lty = 1),
+      cluster_rows = F,
+      row_order = order(-rowMeans(data.matrix(mat))),
+      column_split = rv$data$spike_metadata$metadata_matrix[, 2],
+      cluster_columns = T,
+      row_split = is_row_spiked,
+      show_row_dend = F,
+      show_column_dend = F,
+      show_row_names = F,
+      show_column_names = F
+    )
+     }
+
+  }
+})
+```
+
+Column {.tabset}
+-------------------------------------
+
+### Overview
+
+```{r}
+renderPlot({
+  req(rv$data)
+  if (input$matrix == "simulated") {
+    mat <- data.matrix(rv$data$simulated_data)
+  } else if (input$matrix == "rel") {
+    mat <- data.matrix(rv$data$simulated_matrices$rel)
+  } else if (input$matrix == "a_spiked") {
+    mat <- data.matrix(rv$data$simulated_matrices$a_spiked)
+  } else if (input$matrix == "a_null") {
+    mat <- data.matrix(rv$data$simulated_matrices$a_null)
+  }
+  
+  if (input$spike_metadata == "none") {
+    feature_df <- data.frame(
+      feature = rownames(mat),
+      mean = rowMeans(mat),
+      sd = matrixStats::rowSds(mat)
+    )
+    p <-
+      ggplot(feature_df, aes(x = reorder(feature, -abs(mean)), y = mean))
+    p <- p + geom_point()
+    p <-
+      p + geom_hline(yintercept = mean(feature_df$mean),
+                     linetype = 2)
+    p <- p + geom_errorbar(aes(ymin = mean - sd,
+                               ymax = mean + sd))
+    p <- p + xlab(paste0(input$n_features, " features"))
+    p <-
+      p + ylab(paste0("Mean ± s.d. over ", input$n_sample, " samples"))
+    p <- p + theme_classic()
+    p <- p + geom_hline(yintercept = 0)
+    p <- p +  theme(axis.text.x = element_blank(),
+                    axis.ticks.x = element_blank())
+    p
+    
+  } else {
+    # Spiked
+    
+    if (input$matrix == "simulated") {
+      mat <- data.matrix(rv$data$simulated_data)
+    } else if (input$matrix == "rel") {
+      mat <- data.matrix(rv$data$simulated_matrices$rel)
+    } else if (input$matrix == "a_spiked") {
+      mat <- data.matrix(rv$data$simulated_matrices$a_spiked)
+    } else if (input$matrix == "a_null") {
+      mat <- data.matrix(rv$data$simulated_matrices$a_null)
+    }
+    
+        if (input$no_continuous){
+              simulated_seta <-
+      mat[, which(rv$data$spike_metadata$metadata_matrix[, 1] == 0)]
+    simulated_setb <-
+      mat[, which(rv$data$spike_metadata$metadata_matrix[, 1] == 1)]
+    
+        } else {
+              simulated_seta <-
+      mat[, which(rv$data$spike_metadata$metadata_matrix[, 2] == 0)]
+    simulated_setb <-
+      mat[, which(rv$data$spike_metadata$metadata_matrix[, 2] == 1)]
+    
+        }
+
+    # aggregate
+    feature_df_seta <- data.frame(
+      type = "control (0)",
+      feature = rownames(simulated_seta),
+      mean = rowMeans(simulated_seta),
+      sd = matrixStats::rowSds(data.matrix(simulated_seta)),
+      spiked = ifelse(
+        rownames(simulated_seta) %in% rv$data$spike_metadata$feature_metadata_spike_df$feature_spiked,
+        "spiked",
+        "non-spiked"
+      )
+    )
+    
+    
+    feature_df_setb <- data.frame(
+      type = "case (1)",
+      feature = rownames(simulated_setb),
+      mean = rowMeans(simulated_setb),
+      sd = matrixStats::rowSds(data.matrix(simulated_setb)),
+      spiked = ifelse(
+        rownames(simulated_seta) %in% rv$data$spike_metadata$feature_metadata_spike_df$feature_spiked,
+        "spiked",
+        "non-spiked"
+      )
+    )
+    
+    feature_df_setab <- rbind(feature_df_seta, feature_df_setb)
+    
+    p <-
+      ggplot(feature_df_setab, aes(
+        x = reorder(feature, -abs(mean)),
+        y = mean,
+        color = spiked
+      ))
+    p <- p + facet_wrap(. ~ type)
+    p <- p + geom_point()
+    p <-
+      p + scale_color_manual(values = c("spiked" = "red", "non-spiked" = "black"))
+    
+    p <- p + geom_errorbar(aes(ymin = mean - sd,
+                               ymax = mean + sd))
+    p <- p + xlab("Features") + ylab("Mean ± s.d.")
+    p <- p + theme_classic()
+    p <- p + geom_hline(yintercept = 0)
+    p <- p +  theme(axis.text.x = element_blank(),
+                    axis.ticks.x = element_blank())
+    p
+    
+  }
+})
+```
+
+### Number of spikes
+
+```{r}
+DT::renderDataTable({
+  req(rv$data)
+  is_row_spiked <-
+    ifelse(
+      rownames(rv$data$simulated_data) %in% rv$data$spike_metadata$feature_metadata_spike_df$feature_spiked,
+      "spiked",
+      "non-spiked"
+    )
+  occ <-  as.data.frame(table(is_row_spiked))
+  colnames(occ) <- c("Type", "Number of features")
+  occ
+}, rownames = FALSE)
+```
+
+### $simulated_data
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$simulated_data)
+})
+```
+
+### $feature_param
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$params$feature_param)
+})
+```
+
+### $Omega
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$params$Omega)
+})
+```
+
+### $a_spiked
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$simulated_matrices$a_spiked)
+})
+```
+
+### $a_null
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$simulated_matrices$a_null)
+})
+```
+
+### $rel
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$simulated_matrices$rel)
+})
+```
+
+### $spike_metadata
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$spike_metadata$spike_metadata)
+})
+```
+
+### $metadata_matrix
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$spike_metadata$metadata_matrix)
+})
+```
+
+### $feature_metadata_spike_df
+
+```{r}
+reactive({
+  req(rv$data)
+  knitr::kable(rv$data$spike_metadata$feature_metadata_spike_df)
+})
+```
