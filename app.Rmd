@@ -214,11 +214,14 @@ renderPlot({
       show_row_names = F,
       show_column_names = F
     )
-     } else {
+     } else { # metadata_matrix is not manually specified
+      # visualize continuous spike value
+        top_annotation = HeatmapAnnotation(cont_spike = anno_barplot(rv$data$spike_metadata$metadata_matrix[, 1]))
+        
     Heatmap(
       name = input$matrix,
       data.matrix(mat),
-      #   top_annotation = top_ha,
+      top_annotation = top_annotation,
       right_annotation = row_ha,
       border_gp = gpar(col = "black", lty = 1),
       cluster_rows = F,
